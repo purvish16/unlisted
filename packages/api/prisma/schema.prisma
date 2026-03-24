@@ -1,0 +1,633 @@
+// ═══════════════════════════════════════════════════════════════════════════════
+// Unlisted Platform — Prisma Schema
+// Financial data is stored in PAISE (integer) to avoid floating-point errors.
+// Display as rupees by dividing by 100.
+// ═══════════════════════════════════════════════════════════════════════════════
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
+enum KycStatus {
+  pending
+  partial
+  complete
+}
+
+enum ListingStatus {
+  pending
+  under_review
+  approved
+  live
+  suspended
+  delisted
+}
+
+enum RaiseStatus {
+  draft
+  active
+  funded
+  failed
+  cancelled
+}
+
+enum OrderType {
+  buy
+  sell
+}
+
+enum OrderMode {
+  market
+  limit
+}
+
+enum OrderStatus {
+  open
+  partially_filled
+  filled
+  cancelled
+  expired
+}
+
+enum SettlementStatus {
+  pending
+  signed
+  settled
+  failed
+}
+
+enum TransactionType {
+  deposit
+  withdrawal
+  investment
+  sale
+  dividend
+  fee
+  refund
+}
+
+enum TransactionStatus {
+  pending
+  processing
+  completed
+  failed
+}
+
+enum DocumentType {
+  pan
+  aadhaar
+  incorporation
+  financials
+  cap_table
+  pitch_deck
+  gst
+  bank_statement
+  mca_filings
+  shareholder_agreement
+}
+
+enum VerificationStatus {
+  pending
+  verified
+  rejected
+  action_required
+}
+
+enum EntityType {
+  company
+  investor
+}
+
+enum UserRole {
+  investor
+  company_admin
+  admin
+}
+
+enum DividendStatus {
+  declared
+  processing
+  paid
+  cancelled
+}
+
+// ─── Users ────────────────────────────────────────────────────────────────────
+
+model User {
+  id        String   @id @default(uuid())
+  email     String?  @unique
+  mobile    String   @unique
+  fullName  String?  @map("full_name")
+  panNumber String?  @unique @map("pan_number")
+  role      UserRole @default(investor)
+
+  // KYC
+  kycStatus           KycStatus @default(pending) @map("kyc_status")
+  kycLevel            Int       @default(0) @map("kyc_level") // 0-3
+  isAccreditedInvestor Boolean  @default(false) @map("is_accredited_investor")
+
+  // Bank details (verified)
+  bankAccountNumber String? @map("bank_account_number")
+  bankIfscCode      String? @map("bank_ifsc_code")
+  bankAccountName   String? @map("bank_account_name")
+  bankVerifiedAt    DateTime? @map("bank_verified_at")
+
+  // Aadhaar eKYC
+  aadhaarVerifiedAt DateTime? @map("aadhaar_verified_at")
+  panVerifiedAt     DateTime? @map("pan_verified_at")
+
+  // Profile
+  dateOfBirth DateTime? @map("date_of_birth")
+  address     String?
+  pincode     String?
+  city        String?
+  state       String?
+
+  // Auth
+  otpHash      String?   @map("otp_hash")
+  otpExpiresAt DateTime? @map("otp_expires_at")
+  otpAttempts  Int       @default(0) @map("otp_attempts")
+  lastLoginAt  DateTime? @map("last_login_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  wallet              InvestorWallet?
+  shareRegistryEntries ShareRegistry[]
+  certificates        ShareCertificate[]  @relation("HolderCertificates")
+  orders              Order[]
+  buyTrades           Trade[]             @relation("BuyerTrades")
+  sellTrades          Trade[]             @relation("SellerTrades")
+  transactions        Transaction[]
+  documents           Document[]          @relation("InvestorDocuments")
+  primaryAllocations  PrimaryAllocation[]
+  refreshTokens       RefreshToken[]
+  auditLogs           AuditLog[]
+  companyMemberships  CompanyMember[]
+  notifications       Notification[]
+
+  @@map("users")
+}
+
+model RefreshToken {
+  id        String   @id @default(uuid())
+  userId    String   @map("user_id")
+  token     String   @unique
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+  revokedAt DateTime? @map("revoked_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("refresh_tokens")
+}
+
+// ─── Investor Wallet ──────────────────────────────────────────────────────────
+
+model InvestorWallet {
+  id       String @id @default(uuid())
+  userId   String @unique @map("user_id")
+  currency String @default("INR")
+
+  // All amounts stored in PAISE (integer). Divide by 100 to display as rupees.
+  availableBalance BigInt @default(0) @map("available_balance") // funds usable for investment/withdrawal
+  escrowBalance    BigInt @default(0) @map("escrow_balance")    // funds locked during trade settlement
+  totalInvested    BigInt @default(0) @map("total_invested")    // cumulative invested amount
+
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("investor_wallets")
+}
+
+// ─── Companies ────────────────────────────────────────────────────────────────
+
+model Company {
+  id          String  @id @default(uuid())
+  name        String
+  cin         String? @unique // Corporate Identification Number
+  pan         String? @unique
+  gstin       String? @unique
+  sector      String?
+  description String? @db.Text
+  foundedYear Int?    @map("founded_year")
+  website     String?
+  logoUrl     String? @map("logo_url")
+
+  // Share structure — shares in units, face value in PAISE
+  totalShares BigInt @default(0) @map("total_shares")
+  faceValue   BigInt @default(1000) @map("face_value") // ₹10 face = 1000 paise
+
+  // Listing
+  listingStatus       ListingStatus @default(pending) @map("listing_status")
+  businessHealthScore Int?          @map("business_health_score") // 0-100
+  goLiveAt            DateTime?     @map("go_live_at")
+  suspendedAt         DateTime?     @map("suspended_at")
+  suspensionReason    String?       @map("suspension_reason")
+
+  // Price tracking (cached, updated after each trade) — in PAISE
+  lastTradedPrice  BigInt? @map("last_traded_price")
+  priceChange24h   BigInt? @map("price_change_24h")
+  volume24h        BigInt? @map("volume_24h")
+  high24h          BigInt? @map("high_24h")
+  low24h           BigInt? @map("low_24h")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // Relations
+  shareRegistry       ShareRegistry[]
+  certificates        ShareCertificate[]
+  primaryRaises       PrimaryRaise[]
+  orders              Order[]
+  trades              Trade[]
+  documents           Document[]         @relation("CompanyDocuments")
+  dividends           Dividend[]
+  members             CompanyMember[]
+  updates             CompanyUpdate[]
+  priceHistory        PriceHistory[]
+  primaryAllocations  PrimaryAllocation[]
+
+  @@map("companies")
+}
+
+model CompanyMember {
+  id        String   @id @default(uuid())
+  companyId String   @map("company_id")
+  userId    String   @map("user_id")
+  role      String   @default("admin") // admin, viewer
+  createdAt DateTime @default(now()) @map("created_at")
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, userId])
+  @@map("company_members")
+}
+
+// ─── Share Registry (Source of Truth) ────────────────────────────────────────
+
+model ShareRegistry {
+  id            String   @id @default(uuid())
+  companyId     String   @map("company_id")
+  shareholderId String   @map("shareholder_id")
+
+  // All share quantities in whole units
+  sharesHeld   BigInt @default(0) @map("shares_held")
+  sharesLocked BigInt @default(0) @map("shares_locked") // locked in open sell orders
+
+  // Average cost price in PAISE per share
+  averageCostPrice BigInt @default(0) @map("average_cost_price")
+
+  firstAcquiredAt DateTime  @default(now()) @map("first_acquired_at")
+  lastUpdatedAt   DateTime  @updatedAt @map("last_updated_at")
+
+  company     Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  shareholder User    @relation(fields: [shareholderId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, shareholderId])
+  @@map("share_registry")
+}
+
+// ─── Share Certificates ───────────────────────────────────────────────────────
+
+model ShareCertificate {
+  id                String @id @default(uuid())
+  companyId         String @map("company_id")
+  holderId          String @map("holder_id")
+  certificateNumber String @unique @map("certificate_number")
+
+  // Share range
+  sharesFrom     BigInt @map("shares_from")
+  sharesTo       BigInt @map("shares_to")
+  numberOfShares BigInt @map("number_of_shares")
+
+  // Issue price in PAISE per share
+  issuePrice BigInt   @map("issue_price")
+  issueDate  DateTime @map("issue_date")
+
+  // Cancellation (when shares are transferred)
+  isCancelled         Boolean   @default(false) @map("is_cancelled")
+  cancelledAt         DateTime? @map("cancelled_at")
+  cancellationReason  String?   @map("cancellation_reason")
+
+  // Certificate PDF stored in S3
+  pdfUrl String? @map("pdf_url")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  holder  User    @relation("HolderCertificates", fields: [holderId], references: [id], onDelete: Cascade)
+
+  @@map("share_certificates")
+}
+
+// ─── Primary Market Raises ────────────────────────────────────────────────────
+
+model PrimaryRaise {
+  id        String @id @default(uuid())
+  companyId String @map("company_id")
+
+  // Amounts in PAISE
+  targetAmount BigInt @map("target_amount")
+  raisedAmount BigInt @default(0) @map("raised_amount")
+
+  // Price per share in PAISE
+  pricePerShare  BigInt @map("price_per_share")
+  sharesOffered  BigInt @map("shares_offered")
+  sharesAllocated BigInt @default(0) @map("shares_allocated")
+
+  // Investment limits in PAISE
+  minInvestment BigInt @map("min_investment")
+  maxInvestment BigInt @map("max_investment")
+
+  raiseOpensAt  DateTime @map("raise_opens_at")
+  raiseClosesAt DateTime @map("raise_closes_at")
+
+  status RaiseStatus @default(draft)
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  company     Company             @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  allocations PrimaryAllocation[]
+
+  @@map("primary_raises")
+}
+
+model PrimaryAllocation {
+  id       String @id @default(uuid())
+  raiseId  String @map("raise_id")
+  investorId String @map("investor_id")
+  companyId  String @map("company_id")
+
+  // Amount paid in PAISE
+  amountPaid      BigInt @map("amount_paid")
+  sharesAllocated BigInt @map("shares_allocated")
+  pricePerShare   BigInt @map("price_per_share")
+
+  // Status
+  isPaid      Boolean   @default(false) @map("is_paid")
+  paidAt      DateTime? @map("paid_at")
+  isRefunded  Boolean   @default(false) @map("is_refunded")
+  refundedAt  DateTime? @map("refunded_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  raise   PrimaryRaise @relation(fields: [raiseId], references: [id], onDelete: Cascade)
+  investor User        @relation(fields: [investorId], references: [id])
+  company  Company     @relation(fields: [companyId], references: [id])
+
+  @@map("primary_allocations")
+}
+
+// ─── Secondary Market Orders ──────────────────────────────────────────────────
+
+model Order {
+  id         String @id @default(uuid())
+  investorId String @map("investor_id")
+  companyId  String @map("company_id")
+
+  orderType OrderType @map("order_type")
+  orderMode OrderMode @map("order_mode")
+
+  // Quantities in share units
+  quantity          BigInt @default(0)
+  filledQuantity    BigInt @default(0) @map("filled_quantity")
+  remainingQuantity BigInt @default(0) @map("remaining_quantity")
+
+  // Price in PAISE per share (null for market orders)
+  pricePerShare BigInt? @map("price_per_share")
+
+  status    OrderStatus @default(open)
+  placedAt  DateTime    @default(now()) @map("placed_at")
+  expiresAt DateTime?   @map("expires_at")
+  filledAt  DateTime?   @map("filled_at")
+  cancelledAt DateTime? @map("cancelled_at")
+
+  // Relations
+  investor User    @relation(fields: [investorId], references: [id])
+  company  Company @relation(fields: [companyId], references: [id])
+
+  buyTrades  Trade[] @relation("BuyOrderTrades")
+  sellTrades Trade[] @relation("SellOrderTrades")
+
+  @@map("orders")
+}
+
+// ─── Trades (Matched Orders) ──────────────────────────────────────────────────
+
+model Trade {
+  id          String @id @default(uuid())
+  buyOrderId  String @map("buy_order_id")
+  sellOrderId String @map("sell_order_id")
+  companyId   String @map("company_id")
+  buyerId     String @map("buyer_id")
+  sellerId    String @map("seller_id")
+
+  // Quantities and amounts — all monetary values in PAISE
+  quantity      BigInt @default(0)
+  pricePerShare BigInt @map("price_per_share")
+  totalAmount   BigInt @map("total_amount")   // quantity * pricePerShare
+  platformFee   BigInt @map("platform_fee")   // in PAISE
+  netToSeller   BigInt @map("net_to_seller")  // totalAmount - platformFee
+
+  settlementStatus SettlementStatus @default(pending) @map("settlement_status")
+
+  // eSign tracking
+  buyerSignedAt  DateTime? @map("buyer_signed_at")
+  sellerSignedAt DateTime? @map("seller_signed_at")
+  sh4DocumentUrl String?   @map("sh4_document_url")
+
+  tradedAt   DateTime  @default(now()) @map("traded_at")
+  settledAt  DateTime? @map("settled_at")
+
+  // Relations
+  buyOrder  Order   @relation("BuyOrderTrades", fields: [buyOrderId], references: [id])
+  sellOrder Order   @relation("SellOrderTrades", fields: [sellOrderId], references: [id])
+  company   Company @relation(fields: [companyId], references: [id])
+  buyer     User    @relation("BuyerTrades", fields: [buyerId], references: [id])
+  seller    User    @relation("SellerTrades", fields: [sellerId], references: [id])
+
+  @@map("trades")
+}
+
+// ─── Wallet Transactions (Double-Entry Ledger) ────────────────────────────────
+
+model Transaction {
+  id     String @id @default(uuid())
+  userId String @map("user_id")
+
+  transactionType TransactionType @map("transaction_type")
+
+  // All amounts in PAISE
+  amount        BigInt @default(0)
+  balanceBefore BigInt @map("balance_before")
+  balanceAfter  BigInt @map("balance_after")
+
+  // What caused this transaction
+  referenceId   String? @map("reference_id")   // orderId, tradeId, raiseId, etc.
+  referenceType String? @map("reference_type") // "order" | "trade" | "raise" | "withdrawal" | "deposit"
+
+  status      TransactionStatus @default(pending)
+  description String?
+  metadata    Json?             // gateway response, UTR, etc.
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("transactions")
+}
+
+// ─── Documents ────────────────────────────────────────────────────────────────
+
+model Document {
+  id         String     @id @default(uuid())
+  entityId   String     @map("entity_id")
+  entityType EntityType @map("entity_type")
+
+  documentType DocumentType @map("document_type")
+
+  // Storage
+  fileUrl  String @map("file_url")  // S3 URL
+  fileSize Int    @map("file_size") // bytes
+  mimeType String @map("mime_type")
+  fileName String @map("file_name")
+
+  // Verification
+  verificationStatus VerificationStatus @default(pending) @map("verification_status")
+  verifiedBy         String?            @map("verified_by") // admin userId
+  verifiedAt         DateTime?          @map("verified_at")
+  rejectionReason    String?            @map("rejection_reason")
+  adminNotes         String?            @map("admin_notes")
+
+  uploadedAt DateTime @default(now()) @map("uploaded_at")
+  updatedAt  DateTime @updatedAt @map("updated_at")
+
+  // Polymorphic relations via entityId/entityType
+  company  Company? @relation("CompanyDocuments", fields: [entityId], references: [id], map: "document_company_fk")
+  investor User?    @relation("InvestorDocuments", fields: [entityId], references: [id], map: "document_investor_fk")
+
+  @@map("documents")
+}
+
+// ─── Dividends ────────────────────────────────────────────────────────────────
+
+model Dividend {
+  id        String @id @default(uuid())
+  companyId String @map("company_id")
+
+  // Amount per share in PAISE
+  amountPerShare BigInt @map("amount_per_share")
+  totalPayout    BigInt @default(0) @map("total_payout")
+
+  recordDate  DateTime @map("record_date")
+  paymentDate DateTime @map("payment_date")
+
+  status      DividendStatus @default(declared)
+  declaredBy  String         @map("declared_by") // company admin userId
+  description String?
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@map("dividends")
+}
+
+// ─── Price History ────────────────────────────────────────────────────────────
+
+model PriceHistory {
+  id        String  @id @default(uuid())
+  companyId String  @map("company_id")
+
+  // Prices in PAISE
+  openPrice  BigInt  @map("open_price")
+  closePrice BigInt  @map("close_price")
+  highPrice  BigInt  @map("high_price")
+  lowPrice   BigInt  @map("low_price")
+  volume     BigInt  @default(0)
+
+  recordedAt DateTime @map("recorded_at")
+  interval   String   @default("1d") // 1d, 1w, 1m
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@unique([companyId, recordedAt, interval])
+  @@map("price_history")
+}
+
+// ─── Company Updates ──────────────────────────────────────────────────────────
+
+model CompanyUpdate {
+  id        String  @id @default(uuid())
+  companyId String  @map("company_id")
+  authorId  String  @map("author_id")
+
+  title   String
+  content String  @db.Text
+  type    String  @default("general") // general, financials, milestone, announcement
+
+  isPublished  Boolean   @default(false) @map("is_published")
+  publishedAt  DateTime? @map("published_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  company Company @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  @@map("company_updates")
+}
+
+// ─── Notifications ────────────────────────────────────────────────────────────
+
+model Notification {
+  id     String @id @default(uuid())
+  userId String @map("user_id")
+
+  type    String // trade_matched, order_filled, wallet_credited, kyc_update, etc.
+  title   String
+  body    String
+  data    Json?  // arbitrary payload for deep linking
+
+  isRead   Boolean   @default(false) @map("is_read")
+  readAt   DateTime? @map("read_at")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("notifications")
+}
+
+// ─── Audit Log (Immutable) ────────────────────────────────────────────────────
+
+model AuditLog {
+  id         String @id @default(uuid())
+  userId     String @map("user_id")
+
+  action     String // e.g. "order.placed", "trade.settled", "kyc.verified"
+  entityType String @map("entity_type")
+  entityId   String @map("entity_id")
+  metadata   Json?
+  ipAddress  String? @map("ip_address")
+  userAgent  String? @map("user_agent")
+
+  createdAt DateTime @default(now()) @map("created_at")
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@map("audit_logs")
+}
