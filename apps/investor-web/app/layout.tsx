@@ -1,44 +1,20 @@
 import type { Metadata } from 'next';
 import { Inter } from 'next/font/google';
 import './globals.css';
+import { Providers } from '@/components/shared/Providers';
 
-const inter = Inter({
-  subsets: ['latin'],
-  variable: '--font-inter',
-  display: 'swap',
-});
+const inter = Inter({ subsets: ['latin'], variable: '--font-inter', display: 'swap' });
 
 export const metadata: Metadata = {
-  title: {
-    default: 'Unlisted — Invest Before the IPO',
-    template: '%s | Unlisted',
-  },
-  description:
-    "India's first retail-accessible unlisted shares exchange. Discover, invest in, and trade shares of pre-IPO private companies.",
-  keywords: ['unlisted shares', 'pre-IPO', 'private equity', 'India', 'startup investing'],
-  authors: [{ name: 'Unlisted' }],
-  metadataBase: new URL('https://investors.unlisted.in'),
-  openGraph: {
-    title: 'Unlisted — Invest Before the IPO',
-    description: "India's first retail-accessible unlisted shares exchange.",
-    type: 'website',
-    locale: 'en_IN',
-    url: 'https://investors.unlisted.in',
-  },
-  icons: {
-    icon: '/favicon.ico',
-  },
+  title: { default: 'Unlisted — Invest Before the IPO', template: '%s | Unlisted' },
+  description: "India's first retail-accessible unlisted shares exchange.",
 };
 
-export default function RootLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="en" className={inter.variable}>
       <body className={`${inter.className} antialiased bg-surface text-on-surface`}>
-        {children}
+        <Providers>{children}</Providers>
       </body>
     </html>
   );
